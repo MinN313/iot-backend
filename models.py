@@ -99,6 +99,21 @@ def init_db():
             VALUES ('SENSOR_001', ?, ?, 0)
         ''', (28 + i * 0.5, 60 + i))
     
+    # Tạo admin mặc định nếu chưa có
+    cursor.execute("SELECT id FROM users WHERE email = 'admin@admin.com'")
+    if not cursor.fetchone():
+        from auth import hash_password
+        admin_password = hash_password('admin123')
+        cursor.execute('''
+            INSERT INTO users (email, password_hash, name, role)
+            VALUES ('admin@admin.com', ?, 'Administrator', 'admin')
+        ''', (admin_password,))
+        print("✅ Đã tạo tài khoản admin mặc định!")
+    
+    conn.commit()
+    conn.close()
+    print("✅ Database đã khởi tạo!")
+    
     conn.commit()
     conn.close()
     print("✅ Database đã khởi tạo!")
