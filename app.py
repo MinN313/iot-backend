@@ -179,9 +179,8 @@ def home():
     }), 200
 
 # ==================== RUN SERVER ====================
-
+init_db()
 if __name__ == '__main__':
-    init_db()
     print("=" * 50)
     print("🚀 IOT BACKEND SERVER")
     print("=" * 50)
