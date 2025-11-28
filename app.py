@@ -53,6 +53,158 @@ def api_login():
 def api_get_me():
     return jsonify({"success": True, "data": request.user}), 200
 
+# ==================== FORGOT PASSWORD APIs ====================
+
+@app.route('/api/auth/forgot-password', methods=['POST'])
+def api_forgot_password():
+    """API Quên mật khẩu - Tạo mã reset"""
+    from models import create_reset_code
+    
+    data = request.json
+    email = data.get('email')
+    
+    if not email:
+        return jsonify({"success": False, "error": "Vui lòng nhập email"}), 400
+    
+    code, error = create_reset_code(email)
+    
+    if error:
+        return jsonify({"success": False, "error": error}), 400
+    
+    # Trong thực tế, gửi code qua email
+    # Ở đây trả về code để test (production nên bỏ)
+    return jsonify({
+        "success": True,
+        "message": "Mã reset đã được tạo! Kiểm tra email của bạn.",
+        "code": code  # CHỈ ĐỂ TEST - Production phải gửi qua email
+    }), 200
+
+@app.route('/api/auth/verify-reset-code', methods=['POST'])
+def api_verify_reset_code():
+    """API Kiểm tra mã reset"""
+    from models import verify_reset_code
+    
+    data = request.json
+    email = data.get('email')
+    code = data.get('code')
+    
+    if not email or not code:
+        return jsonify({"success": False, "error": "Thiếu thông tin"}), 400
+    
+    if verify_reset_code(email, code):
+        return jsonify({"success": True, "message": "Mã hợp lệ"}), 200
+    else:
+        return jsonify({"success": False, "error": "Mã không đúng hoặc đã hết hạn"}), 400
+
+@app.route('/api/auth/reset-password', methods=['POST'])
+def api_reset_password():
+    """API Đổi mật khẩu mới"""
+    from models import verify_reset_code, reset_password, delete_reset_code
+    
+    data = request.json
+    email = data.get('email')
+    code = data.get('code')
+    new_password = data.get('new_password')
+    
+    if not all([email, code, new_password]):
+        return jsonify({"success": False, "error": "Thiếu thông tin"}), 400
+    
+    if len(new_password) < 6:
+        return jsonify({"success": False, "error": "Mật khẩu phải ít nhất 6 ký tự"}), 400
+    
+    # Kiểm tra mã
+    if not verify_reset_code(email, code):
+        return jsonify({"success": False, "error": "Mã không đúng hoặc đã hết hạn"}), 400
+    
+    # Đổi mật khẩu
+    reset_password(email, new_password)
+    delete_reset_code(email)
+    
+    return jsonify({
+        "success": True,
+        "message": "Đổi mật khẩu thành công! Vui lòng đăng nhập lại."
+    }), 200
+
+# ==================== ADMIN APIs ====================
+
+@app.route('/api/admin/users', methods=['GET'])
+@require_auth
+@require_role(['admin'])
+def api_admin_get_users():
+    """API Lấy danh sách tất cả users (chỉ admin)"""
+    from models import get_all_users
+    
+    users = get_all_users()
+    return jsonify({"success": True, "data": users}), 200
+
+@app.route('/api/admin/users/<int:user_id>', methods=['GET'])
+@require_auth
+@require_role(['admin'])
+def api_admin_get_user(user_id):
+    """API Lấy thông tin 1 user"""
+    from models import get_user_by_id
+    
+    user = get_user_by_id(user_id)
+    if not user:
+        return jsonify({"success": False, "error": "User không tồn tại"}), 404
+    
+    return jsonify({"success": True, "data": user}), 200
+
+@app.route('/api/admin/users/<int:user_id>/role', methods=['PUT'])
+@require_auth
+@require_role(['admin'])
+def api_admin_update_role(user_id):
+    """API Đổi role của user"""
+    from models import update_user_role
+    
+    data = request.json
+    new_role = data.get('role')
+    
+    if new_role not in ['admin', 'operator', 'user']:
+        return jsonify({"success": False, "error": "Role không hợp lệ"}), 400
+    
+    update_user_role(user_id, new_role)
+    
+    return jsonify({
+        "success": True,
+        "message": f"Đã đổi role thành {new_role}"
+    }), 200
+
+@app.route('/api/admin/users/<int:user_id>/reset-password', methods=['POST'])
+@require_auth
+@require_role(['admin'])
+def api_admin_reset_password(user_id):
+    """API Admin reset mật khẩu cho user"""
+    from models import admin_reset_password
+    
+    data = request.json
+    new_password = data.get('new_password', '123456')  # Mặc định 123456
+    
+    admin_reset_password(user_id, new_password)
+    
+    return jsonify({
+        "success": True,
+        "message": f"Đã reset mật khẩu thành: {new_password}"
+    }), 200
+
+@app.route('/api/admin/users/<int:user_id>', methods=['DELETE'])
+@require_auth
+@require_role(['admin'])
+def api_admin_delete_user(user_id):
+    """API Xóa user"""
+    from models import delete_user
+    
+    # Không cho xóa chính mình
+    if request.user.get('user_id') == user_id:
+        return jsonify({"success": False, "error": "Không thể xóa chính mình"}), 400
+    
+    delete_user(user_id)
+    
+    return jsonify({
+        "success": True,
+        "message": "Đã xóa user"
+    }), 200
+
 # ==================== DEVICE APIs ====================
 
 @app.route('/api/devices', methods=['GET'])

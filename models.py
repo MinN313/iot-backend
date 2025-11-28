@@ -64,6 +64,17 @@ def init_db():
         )
     ''')
     
+    # Bảng RESET_CODES (cho chức năng quên mật khẩu)
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS reset_codes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            email TEXT NOT NULL,
+            code TEXT NOT NULL,
+            expires_at TIMESTAMP NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
     # Thêm dữ liệu mẫu
     sample_devices = [
         ('CAM_001', 'Camera Phòng Khách', 'camera', 'Phòng khách', '192.168.1.100'),
@@ -166,6 +177,149 @@ def mark_alert_read(alert_id):
     cursor.execute("UPDATE alerts SET is_read = 1 WHERE id = ?", (alert_id,))
     conn.commit()
     conn.close()
+# ========================
+# RESET PASSWORD
+# ========================
 
+def create_reset_code(email):
+    """Tạo mã reset password"""
+    import random
+    code = str(random.randint(100000, 999999))  # Mã 6 số
+    
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    # Kiểm tra email tồn tại
+    cursor.execute("SELECT id FROM users WHERE email = ?", (email,))
+    user = cursor.fetchone()
+    
+    if not user:
+        conn.close()
+        return None, "Email không tồn tại"
+    
+    # Xóa mã cũ nếu có
+    cursor.execute("DELETE FROM reset_codes WHERE email = ?", (email,))
+    
+    # Tạo mã mới (hết hạn sau 15 phút)
+    cursor.execute('''
+        INSERT INTO reset_codes (email, code, expires_at)
+        VALUES (?, ?, datetime('now', '+15 minutes'))
+    ''', (email, code))
+    
+    conn.commit()
+    conn.close()
+    
+    return code, None
+
+def verify_reset_code(email, code):
+    """Kiểm tra mã reset có đúng không"""
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        SELECT * FROM reset_codes 
+        WHERE email = ? AND code = ? AND expires_at > datetime('now')
+    ''', (email, code))
+    
+    result = cursor.fetchone()
+    conn.close()
+    
+    return result is not None
+
+def reset_password(email, new_password):
+    """Đổi mật khẩu"""
+    from auth import hash_password
+    
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    password_hash = hash_password(new_password)
+    cursor.execute(
+        "UPDATE users SET password_hash = ? WHERE email = ?",
+        (password_hash, email)
+    )
+    
+    # Xóa mã reset
+    cursor.execute("DELETE FROM reset_codes WHERE email = ?", (email,))
+    
+    conn.commit()
+    conn.close()
+    
+    return True
+
+def delete_reset_code(email):
+    """Xóa mã reset sau khi dùng"""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM reset_codes WHERE email = ?", (email,))
+    conn.commit()
+    conn.close()
+
+# ========================
+# ADMIN - QUẢN LÝ USER
+# ========================
+
+def get_all_users():
+    """Lấy danh sách tất cả users"""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT id, email, name, role, created_at 
+        FROM users 
+        ORDER BY created_at DESC
+    ''')
+    users = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return users
+
+def update_user_role(user_id, new_role):
+    """Đổi role của user"""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE users SET role = ? WHERE id = ?",
+        (new_role, user_id)
+    )
+    conn.commit()
+    conn.close()
+    return True
+
+def admin_reset_password(user_id, new_password):
+    """Admin reset mật khẩu cho user"""
+    from auth import hash_password
+    
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    password_hash = hash_password(new_password)
+    cursor.execute(
+        "UPDATE users SET password_hash = ? WHERE id = ?",
+        (password_hash, user_id)
+    )
+    
+    conn.commit()
+    conn.close()
+    return True
+
+def delete_user(user_id):
+    """Xóa user"""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM users WHERE id = ?", (user_id,))
+    conn.commit()
+    conn.close()
+    return True
+
+def get_user_by_id(user_id):
+    """Lấy thông tin user theo ID"""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id, email, name, role, created_at FROM users WHERE id = ?",
+        (user_id,)
+    )
+    user = cursor.fetchone()
+    conn.close()
+    return dict(user) if user else None
 if __name__ == "__main__":
     init_db()
