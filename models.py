@@ -1,16 +1,18 @@
 # ============================================================
-# models.py - DATABASE MODELS
+# models.py - DATABASE MODELS (Layer 6)
 # ============================================================
 
 import sqlite3
 from config import DATABASE_PATH
 
 def get_db():
+    """Kết nối database"""
     conn = sqlite3.connect(DATABASE_PATH)
     conn.row_factory = sqlite3.Row
     return conn
 
 def init_db():
+    """Khởi tạo database và các bảng"""
     conn = get_db()
     cursor = conn.cursor()
     
@@ -34,9 +36,11 @@ def init_db():
             name TEXT NOT NULL,
             type TEXT NOT NULL,
             location TEXT,
-            ip_address TEXT,
             status TEXT DEFAULT 'offline',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            ip_address TEXT,
+            mac_address TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
     
@@ -48,7 +52,7 @@ def init_db():
             temperature REAL,
             humidity REAL,
             motion INTEGER DEFAULT 0,
-            recorded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
     
@@ -75,29 +79,7 @@ def init_db():
         )
     ''')
     
-    # Thêm dữ liệu mẫu
-    sample_devices = [
-        ('CAM_001', 'Camera Phòng Khách', 'camera', 'Phòng khách', '192.168.1.100'),
-        ('CAM_002', 'Camera Sân Trước', 'camera', 'Sân trước', '192.168.1.101'),
-        ('SENSOR_001', 'Cảm Biến Nhiệt Độ', 'sensor', 'Phòng ngủ', '192.168.1.102'),
-        ('LED_001', 'Đèn Phòng Khách', 'led', 'Phòng khách', '192.168.1.103'),
-    ]
-    
-    for device in sample_devices:
-        try:
-            cursor.execute('''
-                INSERT INTO devices (device_id, name, type, location, ip_address, status)
-                VALUES (?, ?, ?, ?, ?, 'online')
-            ''', device)
-        except sqlite3.IntegrityError:
-            pass
-    
-    # Thêm sensor data mẫu
-    for i in range(5):
-        cursor.execute('''
-            INSERT INTO sensor_data (device_id, temperature, humidity, motion)
-            VALUES ('SENSOR_001', ?, ?, 0)
-        ''', (28 + i * 0.5, 60 + i))
+    conn.commit()
     
     # Tạo admin mặc định nếu chưa có
     cursor.execute("SELECT id FROM users WHERE email = 'admin@admin.com'")
@@ -108,25 +90,96 @@ def init_db():
             INSERT INTO users (email, password_hash, name, role)
             VALUES ('admin@admin.com', ?, 'Administrator', 'admin')
         ''', (admin_password,))
+        conn.commit()
         print("✅ Đã tạo tài khoản admin mặc định!")
     
-    conn.commit()
-    conn.close()
-    print("✅ Database đã khởi tạo!")
+    # Thêm dữ liệu mẫu nếu chưa có
+    cursor.execute("SELECT COUNT(*) FROM devices")
+    if cursor.fetchone()[0] == 0:
+        sample_devices = [
+            ('CAM_001', 'Camera Phòng Khách', 'camera', 'Phòng khách', 'online', '192.168.1.100'),
+            ('CAM_002', 'Camera Sân Trước', 'camera', 'Sân trước', 'online', '192.168.1.101'),
+            ('SENSOR_001', 'Cảm biến Phòng Khách', 'sensor', 'Phòng khách', 'online', '192.168.1.102'),
+            ('LED_001', 'Đèn LED Phòng Khách', 'led', 'Phòng khách', 'online', '192.168.1.103'),
+        ]
+        cursor.executemany('''
+            INSERT INTO devices (device_id, name, type, location, status, ip_address)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', sample_devices)
+        
+        # Thêm dữ liệu sensor mẫu
+        cursor.execute('''
+            INSERT INTO sensor_data (device_id, temperature, humidity, motion)
+            VALUES ('SENSOR_001', 28.0, 60, 0)
+        ''')
+        
+        conn.commit()
+        print("✅ Đã thêm dữ liệu mẫu!")
     
-    conn.commit()
     conn.close()
     print("✅ Database đã khởi tạo!")
 
-def get_all_devices():
+# ==================== USER FUNCTIONS ====================
+
+def get_user_by_email(email):
+    """Lấy user theo email"""
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM devices")
+    cursor.execute("SELECT * FROM users WHERE email = ?", (email,))
+    user = cursor.fetchone()
+    conn.close()
+    return dict(user) if user else None
+
+def create_user(email, password_hash, name, role='user'):
+    """Tạo user mới"""
+    conn = get_db()
+    cursor = conn.cursor()
+    try:
+        cursor.execute('''
+            INSERT INTO users (email, password_hash, name, role)
+            VALUES (?, ?, ?, ?)
+        ''', (email, password_hash, name, role))
+        conn.commit()
+        user_id = cursor.lastrowid
+        conn.close()
+        return user_id, None
+    except sqlite3.IntegrityError:
+        conn.close()
+        return None, "Email đã tồn tại"
+
+# ==================== DEVICE FUNCTIONS ====================
+
+def get_all_devices():
+    """Lấy tất cả devices"""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM devices ORDER BY created_at DESC")
     devices = [dict(row) for row in cursor.fetchall()]
     conn.close()
     return devices
 
+def get_device_by_id(device_id):
+    """Lấy device theo ID"""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM devices WHERE device_id = ?", (device_id,))
+    device = cursor.fetchone()
+    conn.close()
+    return dict(device) if device else None
+
+def update_device_status(device_id, status):
+    """Cập nhật trạng thái device"""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute('''
+        UPDATE devices SET status = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE device_id = ?
+    ''', (status, device_id))
+    conn.commit()
+    conn.close()
+
 def get_devices_by_type(device_type):
+    """Lấy devices theo loại"""
     conn = get_db()
     cursor = conn.cursor()
     cursor.execute("SELECT * FROM devices WHERE type = ?", (device_type,))
@@ -134,23 +187,22 @@ def get_devices_by_type(device_type):
     conn.close()
     return devices
 
+# ==================== SENSOR FUNCTIONS ====================
+
 def get_latest_sensor_data():
+    """Lấy dữ liệu sensor mới nhất"""
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM sensor_data ORDER BY recorded_at DESC LIMIT 1")
+    cursor.execute('''
+        SELECT * FROM sensor_data 
+        ORDER BY created_at DESC LIMIT 1
+    ''')
     data = cursor.fetchone()
     conn.close()
     return dict(data) if data else None
 
-def get_sensor_history(limit=50):
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM sensor_data ORDER BY recorded_at DESC LIMIT ?", (limit,))
-    data = [dict(row) for row in cursor.fetchall()]
-    conn.close()
-    return data
-
 def add_sensor_data(device_id, temperature, humidity, motion=0):
+    """Thêm dữ liệu sensor"""
     conn = get_db()
     cursor = conn.cursor()
     cursor.execute('''
@@ -158,25 +210,27 @@ def add_sensor_data(device_id, temperature, humidity, motion=0):
         VALUES (?, ?, ?, ?)
     ''', (device_id, temperature, humidity, motion))
     conn.commit()
+    data_id = cursor.lastrowid
     conn.close()
+    return data_id
+
+# ==================== ALERT FUNCTIONS ====================
 
 def get_all_alerts(limit=50):
+    """Lấy tất cả alerts"""
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM alerts ORDER BY created_at DESC LIMIT ?", (limit,))
+    cursor.execute('''
+        SELECT * FROM alerts 
+        ORDER BY created_at DESC 
+        LIMIT ?
+    ''', (limit,))
     alerts = [dict(row) for row in cursor.fetchall()]
     conn.close()
     return alerts
 
-def get_unread_alerts():
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM alerts WHERE is_read = 0 ORDER BY created_at DESC")
-    alerts = [dict(row) for row in cursor.fetchall()]
-    conn.close()
-    return alerts
-
-def add_alert(device_id, alert_type, message):
+def create_alert(device_id, alert_type, message):
+    """Tạo alert mới"""
     conn = get_db()
     cursor = conn.cursor()
     cursor.execute('''
@@ -184,14 +238,55 @@ def add_alert(device_id, alert_type, message):
         VALUES (?, ?, ?)
     ''', (device_id, alert_type, message))
     conn.commit()
+    alert_id = cursor.lastrowid
     conn.close()
+    return alert_id
 
 def mark_alert_read(alert_id):
+    """Đánh dấu alert đã đọc"""
     conn = get_db()
     cursor = conn.cursor()
     cursor.execute("UPDATE alerts SET is_read = 1 WHERE id = ?", (alert_id,))
     conn.commit()
     conn.close()
+
+def get_unread_alerts_count():
+    """Đếm số alerts chưa đọc"""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM alerts WHERE is_read = 0")
+    count = cursor.fetchone()[0]
+    conn.close()
+    return count
+
+# ==================== DASHBOARD STATS ====================
+
+def get_dashboard_stats():
+    """Lấy thống kê cho dashboard"""
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT COUNT(*) FROM devices")
+    total_devices = cursor.fetchone()[0]
+    
+    cursor.execute("SELECT COUNT(*) FROM devices WHERE status = 'online'")
+    online_devices = cursor.fetchone()[0]
+    
+    cursor.execute("SELECT COUNT(*) FROM devices WHERE type = 'camera'")
+    total_cameras = cursor.fetchone()[0]
+    
+    cursor.execute("SELECT COUNT(*) FROM alerts WHERE is_read = 0")
+    unread_alerts = cursor.fetchone()[0]
+    
+    conn.close()
+    
+    return {
+        'total_devices': total_devices,
+        'online_devices': online_devices,
+        'total_cameras': total_cameras,
+        'unread_alerts': unread_alerts
+    }
+
 # ========================
 # RESET PASSWORD
 # ========================
@@ -199,7 +294,7 @@ def mark_alert_read(alert_id):
 def create_reset_code(email):
     """Tạo mã reset password"""
     import random
-    code = str(random.randint(100000, 999999))  # Mã 6 số
+    code = str(random.randint(100000, 999999))
     
     conn = get_db()
     cursor = conn.cursor()
@@ -336,5 +431,7 @@ def get_user_by_id(user_id):
     user = cursor.fetchone()
     conn.close()
     return dict(user) if user else None
-if __name__ == "__main__":
+
+
+if __name__ == '__main__':
     init_db()
