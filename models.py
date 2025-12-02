@@ -297,10 +297,14 @@ def update_slot(slot_number, name=None, slot_type=None, icon=None, unit=None,
     return True, None
 
 def delete_slot(slot_number):
-    """Xóa slot (soft delete - đặt is_active = 0)"""
+    """Xóa slot (hard delete)"""
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("UPDATE slots SET is_active = 0 WHERE slot_number = ?", (slot_number,))
+    # Xóa dữ liệu liên quan
+    cursor.execute("DELETE FROM slot_data WHERE slot_number = ?", (slot_number,))
+    cursor.execute("DELETE FROM camera_images WHERE slot_number = ?", (slot_number,))
+    # Xóa slot
+    cursor.execute("DELETE FROM slots WHERE slot_number = ?", (slot_number,))
     conn.commit()
     conn.close()
 
