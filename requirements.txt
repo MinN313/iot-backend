@@ -1,0 +1,23 @@
+# ============================================================
+# requirements.txt - CÁC THƯ VIỆN CẦN CÀI
+# ============================================================
+# Chạy: pip install -r requirements.txt
+# ============================================================
+
+# Flask - Web framework
+flask==2.3.3
+
+# Flask-CORS - Cho phép cross-origin requests
+flask-cors==4.0.0
+
+# PyJWT - Tạo và giải mã JWT token
+pyjwt==2.8.0
+
+# Bcrypt - Mã hóa mật khẩu
+bcrypt==4.0.1
+
+# Paho MQTT - Kết nối MQTT broker
+paho-mqtt==1.6.1
+
+# Gunicorn - Production server (Render dùng)
+gunicorn==21.2.0
