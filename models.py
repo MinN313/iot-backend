@@ -124,6 +124,18 @@ def init_db():
     
     conn.commit()
     
+    # ========== BẢNG RESET REQUESTS ==========
+    # Yêu cầu reset password (Admin xử lý)
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS reset_requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            email TEXT NOT NULL,
+            user_name TEXT,
+            status TEXT DEFAULT 'pending',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
     # ========== TẠO ADMIN MẶC ĐỊNH ==========
     cursor.execute("SELECT id FROM users WHERE email = 'admin@admin.com'")
     if not cursor.fetchone():
@@ -274,22 +286,22 @@ def update_slot(slot_number, name=None, slot_type=None, icon=None, unit=None,
         conn.close()
         return False, "Slot không tồn tại"
     
-    # Cập nhật các trường được chỉ định
+    # Cập nhật các trường
     cursor.execute('''
         UPDATE slots SET 
-            name = ?, type = ?, icon = ?, unit = ?, location = ?,
-            threshold_min = ?, threshold_max = ?, stream_url = ?,
+            name = COALESCE(?, name),
+            type = COALESCE(?, type),
+            icon = COALESCE(?, icon),
+            unit = COALESCE(?, unit),
+            location = COALESCE(?, location),
+            threshold_min = ?,
+            threshold_max = ?,
+            stream_url = COALESCE(?, stream_url),
             updated_at = CURRENT_TIMESTAMP
         WHERE slot_number = ?
     ''', (
-        name if name else current['name'],
-        slot_type if slot_type else current['type'],
-        icon if icon else current['icon'],
-        unit if unit else current['unit'],
-        location if location else current['location'],
-        threshold_min if threshold_min is not None else current['threshold_min'],
-        threshold_max if threshold_max is not None else current['threshold_max'],
-        stream_url if stream_url else current['stream_url'],
+        name, slot_type, icon, unit, location,
+        threshold_min, threshold_max, stream_url,
         slot_number
     ))
     conn.commit()
@@ -571,6 +583,71 @@ def get_dashboard_stats():
         'unread_alerts': unread_alerts
     }
 
+# ==================== PASSWORD RESET REQUESTS ====================
+
+def create_password_reset_request(email):
+    """Tạo yêu cầu reset password để Admin xử lý"""
+    user = get_user_by_email(email)
+    if not user:
+        return None, "Email không tồn tại"
+    
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    # Xóa yêu cầu cũ của email này
+    cursor.execute("DELETE FROM reset_requests WHERE email = ?", (email,))
+    
+    # Tạo yêu cầu mới
+    cursor.execute('''
+        INSERT INTO reset_requests (email, user_name, status, created_at)
+        VALUES (?, ?, 'pending', CURRENT_TIMESTAMP)
+    ''', (email, user['name']))
+    conn.commit()
+    request_id = cursor.lastrowid
+    conn.close()
+    
+    return request_id, None
+
+def get_reset_requests():
+    """Lấy danh sách yêu cầu reset password (cho Admin)"""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT * FROM reset_requests 
+        ORDER BY created_at DESC
+    ''')
+    requests = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return requests
+
+def get_pending_reset_count():
+    """Đếm số yêu cầu chưa xử lý"""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM reset_requests WHERE status = 'pending'")
+    count = cursor.fetchone()[0]
+    conn.close()
+    return count
+
+def complete_reset_request(request_id):
+    """Đánh dấu yêu cầu đã xử lý"""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute('''
+        UPDATE reset_requests 
+        SET status = 'completed' 
+        WHERE id = ?
+    ''', (request_id,))
+    conn.commit()
+    conn.close()
+
+def delete_reset_request(request_id):
+    """Xóa yêu cầu"""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM reset_requests WHERE id = ?", (request_id,))
+    conn.commit()
+    conn.close()
 
 # ==================== CHẠY THỬ ====================
 if __name__ == '__main__':

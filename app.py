@@ -176,48 +176,22 @@ def api_login():
 
 @app.route('/api/auth/forgot-password', methods=['POST'])
 def api_forgot_password():
-    """Tạo mã reset password"""
+    """Tạo yêu cầu reset password - Admin sẽ xử lý"""
     data = request.json
     email = data.get('email', '').strip()
     
     if not email:
         return jsonify({"success": False, "error": "Vui lòng nhập email"}), 400
     
-    code, error = create_reset_code(email)
+    from models import create_password_reset_request
+    request_id, error = create_password_reset_request(email)
     
     if error:
         return jsonify({"success": False, "error": error}), 400
     
-    # Trong thực tế: gửi mã qua email
-    # Hiện tại: trả về mã để test
     return jsonify({
         "success": True,
-        "message": "Mã reset đã được tạo!",
-        "code": code  # Chỉ để test, production nên xóa dòng này
-    }), 200
-
-@app.route('/api/auth/reset-password', methods=['POST'])
-def api_reset_password():
-    """Đổi mật khẩu mới"""
-    data = request.json
-    email = data.get('email', '').strip()
-    code = data.get('code', '').strip()
-    new_password = data.get('new_password', '')
-    
-    if not all([email, code, new_password]):
-        return jsonify({"success": False, "error": "Thiếu thông tin"}), 400
-    
-    if len(new_password) < 6:
-        return jsonify({"success": False, "error": "Mật khẩu phải ít nhất 6 ký tự"}), 400
-    
-    if not verify_reset_code(email, code):
-        return jsonify({"success": False, "error": "Mã không đúng hoặc đã hết hạn"}), 400
-    
-    reset_password(email, new_password)
-    
-    return jsonify({
-        "success": True,
-        "message": "Đổi mật khẩu thành công!"
+        "message": "Yêu cầu đã được gửi! Admin sẽ xử lý và liên hệ với bạn."
     }), 200
 
 
@@ -653,6 +627,41 @@ def api_admin_delete_user(user_id):
     delete_user(user_id)
     return jsonify({"success": True, "message": "Đã xóa user"}), 200
 
+@app.route('/api/admin/reset-requests', methods=['GET'])
+@require_auth
+@require_role(['admin'])
+def api_get_reset_requests():
+    """Lấy danh sách yêu cầu reset password"""
+    from models import get_reset_requests
+    requests = get_reset_requests()
+    return jsonify({"success": True, "data": requests}), 200
+
+@app.route('/api/admin/reset-requests/<int:request_id>/complete', methods=['POST'])
+@require_auth
+@require_role(['admin'])
+def api_complete_reset_request(request_id):
+    """Đánh dấu yêu cầu đã xử lý"""
+    from models import complete_reset_request
+    complete_reset_request(request_id)
+    return jsonify({"success": True, "message": "Đã đánh dấu hoàn thành"}), 200
+
+@app.route('/api/admin/reset-requests/<int:request_id>', methods=['DELETE'])
+@require_auth
+@require_role(['admin'])
+def api_delete_reset_request(request_id):
+    """Xóa yêu cầu"""
+    from models import delete_reset_request
+    delete_reset_request(request_id)
+    return jsonify({"success": True, "message": "Đã xóa"}), 200
+
+@app.route('/api/admin/reset-requests/count', methods=['GET'])
+@require_auth
+@require_role(['admin'])
+def api_get_reset_count():
+    """Đếm số yêu cầu chưa xử lý"""
+    from models import get_pending_reset_count
+    count = get_pending_reset_count()
+    return jsonify({"success": True, "count": count}), 200
 
 # ==================== MQTT STATUS API ====================
 
