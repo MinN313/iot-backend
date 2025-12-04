@@ -2,10 +2,20 @@ import os
 from config import DATABASE_URL, MAX_SLOTS
 
 if DATABASE_URL:
-    import psycopg
-    from psycopg.rows import dict_row
+    import pg8000
+    import urllib.parse
     USE_POSTGRES = True
-    print("✅ PostgreSQL")
+    print("✅ PostgreSQL (pg8000)")
+    
+    # Parse DATABASE_URL
+    parsed = urllib.parse.urlparse(DATABASE_URL)
+    PG_CONFIG = {
+        'user': parsed.username,
+        'password': parsed.password,
+        'host': parsed.hostname,
+        'port': parsed.port or 5432,
+        'database': parsed.path[1:]
+    }
 else:
     import sqlite3
     USE_POSTGRES = False
@@ -14,7 +24,7 @@ else:
 
 def get_db():
     if USE_POSTGRES:
-        return psycopg.connect(DATABASE_URL, row_factory=dict_row)
+        return pg8000.connect(**PG_CONFIG)
     conn = sqlite3.connect(DATABASE_PATH)
     conn.row_factory = sqlite3.Row
     return conn
@@ -22,11 +32,13 @@ def get_db():
 def get_cursor(conn):
     return conn.cursor()
 
-def dict_row_convert(row):
+def dict_row_convert(row, description):
     if row is None:
         return None
-    if isinstance(row, dict):
-        return row
+    if USE_POSTGRES:
+        # pg8000 returns tuples, convert to dict
+        columns = [col[0] for col in description]
+        return dict(zip(columns, row))
     return dict(row)
 
 def q(query, params=None, one=False, all=False):
@@ -38,12 +50,14 @@ def q(query, params=None, one=False, all=False):
         cur.execute(query, params) if params else cur.execute(query)
         if one:
             r = cur.fetchone()
+            desc = cur.description
             cur.close(); conn.close()
-            return dict_row_convert(r)
+            return dict_row_convert(r, desc)
         elif all:
             r = cur.fetchall()
+            desc = cur.description
             cur.close(); conn.close()
-            return [dict_row_convert(x) for x in r]
+            return [dict_row_convert(x, desc) for x in r]
         else:
             conn.commit()
             lid = None
@@ -51,7 +65,7 @@ def q(query, params=None, one=False, all=False):
                 try:
                     cur.execute("SELECT lastval()")
                     result = cur.fetchone()
-                    lid = result['lastval'] if result else None
+                    lid = result[0] if result else None
                 except: pass
             else:
                 lid = cur.lastrowid
@@ -59,7 +73,9 @@ def q(query, params=None, one=False, all=False):
             return lid
     except Exception as e:
         print(f"DB Error: {e}")
-        cur.close(); conn.close()
+        try:
+            cur.close(); conn.close()
+        except: pass
         raise e
 
 def init_db():
