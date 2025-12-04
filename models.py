@@ -2,8 +2,8 @@ import os
 from config import DATABASE_URL, MAX_SLOTS
 
 if DATABASE_URL:
-    import psycopg2
-    from psycopg2.extras import RealDictCursor
+    import psycopg
+    from psycopg.rows import dict_row
     USE_POSTGRES = True
     print("✅ PostgreSQL")
 else:
@@ -14,18 +14,20 @@ else:
 
 def get_db():
     if USE_POSTGRES:
-        return psycopg2.connect(DATABASE_URL)
+        return psycopg.connect(DATABASE_URL, row_factory=dict_row)
     conn = sqlite3.connect(DATABASE_PATH)
     conn.row_factory = sqlite3.Row
     return conn
 
 def get_cursor(conn):
-    if USE_POSTGRES:
-        return conn.cursor(cursor_factory=RealDictCursor)
     return conn.cursor()
 
-def dict_row(row):
-    return dict(row) if row else None
+def dict_row_convert(row):
+    if row is None:
+        return None
+    if isinstance(row, dict):
+        return row
+    return dict(row)
 
 def q(query, params=None, one=False, all=False):
     conn = get_db()
@@ -37,18 +39,19 @@ def q(query, params=None, one=False, all=False):
         if one:
             r = cur.fetchone()
             cur.close(); conn.close()
-            return dict_row(r)
+            return dict_row_convert(r)
         elif all:
             r = cur.fetchall()
             cur.close(); conn.close()
-            return [dict_row(x) for x in r]
+            return [dict_row_convert(x) for x in r]
         else:
             conn.commit()
             lid = None
             if USE_POSTGRES:
                 try:
                     cur.execute("SELECT lastval()")
-                    lid = cur.fetchone()['lastval']
+                    result = cur.fetchone()
+                    lid = result['lastval'] if result else None
                 except: pass
             else:
                 lid = cur.lastrowid
