@@ -1,656 +1,303 @@
-# ============================================================
-# models.py - DATABASE MODELS
-# ============================================================
-# File này quản lý tất cả tương tác với Database
-# Sử dụng SQLite - database nhẹ, không cần cài đặt server
-# ============================================================
-
-import sqlite3
+# models.py - DATABASE (PostgreSQL + SQLite)
+import os
 from datetime import datetime
-from config import DATABASE_PATH, MAX_SLOTS
 
-# ==================== KẾT NỐI DATABASE ====================
+DATABASE_URL = os.environ.get('DATABASE_URL')
+
+if DATABASE_URL:
+    import psycopg2
+    from psycopg2.extras import RealDictCursor
+    USE_POSTGRES = True
+    print("✅ Sử dụng PostgreSQL")
+else:
+    import sqlite3
+    USE_POSTGRES = False
+    DATABASE_PATH = "iot_database.db"
+    print("✅ Sử dụng SQLite")
+
+MAX_SLOTS = 20
 
 def get_db():
-    """
-    Tạo kết nối đến database SQLite
-    row_factory = sqlite3.Row cho phép truy cập cột bằng tên
-    """
-    conn = sqlite3.connect(DATABASE_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+    if USE_POSTGRES:
+        return psycopg2.connect(DATABASE_URL)
+    else:
+        conn = sqlite3.connect(DATABASE_PATH)
+        conn.row_factory = sqlite3.Row
+        return conn
 
-# ==================== KHỞI TẠO DATABASE ====================
+def get_cursor(conn):
+    if USE_POSTGRES:
+        return conn.cursor(cursor_factory=RealDictCursor)
+    return conn.cursor()
+
+def dict_row(row):
+    if row is None:
+        return None
+    return dict(row)
+
+def q(query, params=None, one=False, all=False):
+    """Run query helper"""
+    conn = get_db()
+    cur = get_cursor(conn)
+    
+    if USE_POSTGRES and params:
+        query = query.replace('?', '%s')
+    
+    try:
+        cur.execute(query, params) if params else cur.execute(query)
+        
+        if one:
+            r = cur.fetchone()
+            cur.close(); conn.close()
+            return dict_row(r)
+        elif all:
+            r = cur.fetchall()
+            cur.close(); conn.close()
+            return [dict_row(x) for x in r]
+        else:
+            conn.commit()
+            lid = None
+            if USE_POSTGRES:
+                try:
+                    cur.execute("SELECT lastval()")
+                    lid = cur.fetchone()['lastval']
+                except: pass
+            else:
+                lid = cur.lastrowid
+            cur.close(); conn.close()
+            return lid
+    except Exception as e:
+        cur.close(); conn.close()
+        raise e
 
 def init_db():
-    """
-    Tạo tất cả các bảng cần thiết
-    Chạy mỗi khi server khởi động
-    """
     conn = get_db()
-    cursor = conn.cursor()
+    cur = get_cursor(conn)
     
-    # ========== BẢNG USERS ==========
-    # Lưu thông tin người dùng
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            email TEXT UNIQUE NOT NULL,
-            password_hash TEXT NOT NULL,
-            name TEXT,
-            role TEXT DEFAULT 'user',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    
-    # ========== BẢNG SLOTS ==========
-    # Cấu hình các slot thiết bị
-    # Đây là bảng quan trọng nhất - định nghĩa thiết bị
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS slots (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            slot_number INTEGER UNIQUE NOT NULL,
-            name TEXT NOT NULL,
-            type TEXT NOT NULL,
-            icon TEXT DEFAULT '📟',
-            unit TEXT DEFAULT '',
-            location TEXT DEFAULT '',
-            threshold_min REAL,
-            threshold_max REAL,
-            stream_url TEXT,
-            is_active INTEGER DEFAULT 1,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    # Giải thích các cột:
-    # - slot_number: Số slot (1-20), ESP32 gửi đến số này
-    # - name: Tên hiển thị (VD: "Nhiệt độ phòng khách")
-    # - type: Loại slot (value/status/control/camera)
-    # - icon: Emoji icon hiển thị
-    # - unit: Đơn vị (°C, %, lux...)
-    # - location: Vị trí đặt (Phòng khách, Sân vườn...)
-    # - threshold_min/max: Ngưỡng cảnh báo
-    # - stream_url: URL stream cho camera (local)
-    # - is_active: Slot có đang hoạt động không
-    
-    # ========== BẢNG SLOT_DATA ==========
-    # Lưu dữ liệu từ ESP32 gửi lên
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS slot_data (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            slot_number INTEGER NOT NULL,
-            value TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    
-    # ========== BẢNG CAMERA_IMAGES ==========
-    # Lưu ảnh mới nhất từ camera
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS camera_images (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            slot_number INTEGER UNIQUE NOT NULL,
-            image_data TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    # image_data: Ảnh dạng Base64
-    
-    # ========== BẢNG ALERTS ==========
-    # Lưu các cảnh báo
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS alerts (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            slot_number INTEGER,
-            alert_type TEXT NOT NULL,
-            message TEXT NOT NULL,
-            is_read INTEGER DEFAULT 0,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    
-    # ========== BẢNG RESET_CODES ==========
-    # Mã reset mật khẩu
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS reset_codes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            email TEXT NOT NULL,
-            code TEXT NOT NULL,
-            expires_at TIMESTAMP NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
+    if USE_POSTGRES:
+        cur.execute('''CREATE TABLE IF NOT EXISTS users (
+            id SERIAL PRIMARY KEY, email TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL, name TEXT,
+            role TEXT DEFAULT 'user', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+        cur.execute('''CREATE TABLE IF NOT EXISTS slots (
+            id SERIAL PRIMARY KEY, slot_number INTEGER UNIQUE NOT NULL,
+            name TEXT NOT NULL, type TEXT NOT NULL, icon TEXT DEFAULT '📟',
+            unit TEXT DEFAULT '', location TEXT DEFAULT '',
+            threshold_min REAL, threshold_max REAL, stream_url TEXT,
+            is_active INTEGER DEFAULT 1, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+        cur.execute('''CREATE TABLE IF NOT EXISTS slot_data (
+            id SERIAL PRIMARY KEY, slot_number INTEGER NOT NULL,
+            value TEXT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+        cur.execute('''CREATE TABLE IF NOT EXISTS camera_images (
+            id SERIAL PRIMARY KEY, slot_number INTEGER UNIQUE NOT NULL,
+            image_data TEXT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+        cur.execute('''CREATE TABLE IF NOT EXISTS alerts (
+            id SERIAL PRIMARY KEY, slot_number INTEGER,
+            alert_type TEXT NOT NULL, message TEXT NOT NULL,
+            is_read INTEGER DEFAULT 0, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+        cur.execute('''CREATE TABLE IF NOT EXISTS reset_codes (
+            id SERIAL PRIMARY KEY, email TEXT NOT NULL,
+            code TEXT NOT NULL, expires_at TIMESTAMP NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+    else:
+        cur.execute('''CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL, name TEXT,
+            role TEXT DEFAULT 'user', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+        cur.execute('''CREATE TABLE IF NOT EXISTS slots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, slot_number INTEGER UNIQUE NOT NULL,
+            name TEXT NOT NULL, type TEXT NOT NULL, icon TEXT DEFAULT '📟',
+            unit TEXT DEFAULT '', location TEXT DEFAULT '',
+            threshold_min REAL, threshold_max REAL, stream_url TEXT,
+            is_active INTEGER DEFAULT 1, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+        cur.execute('''CREATE TABLE IF NOT EXISTS slot_data (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, slot_number INTEGER NOT NULL,
+            value TEXT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+        cur.execute('''CREATE TABLE IF NOT EXISTS camera_images (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, slot_number INTEGER UNIQUE NOT NULL,
+            image_data TEXT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+        cur.execute('''CREATE TABLE IF NOT EXISTS alerts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, slot_number INTEGER,
+            alert_type TEXT NOT NULL, message TEXT NOT NULL,
+            is_read INTEGER DEFAULT 0, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+        cur.execute('''CREATE TABLE IF NOT EXISTS reset_codes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT NOT NULL,
+            code TEXT NOT NULL, expires_at TIMESTAMP NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
     
     conn.commit()
     
-    # ========== BẢNG RESET REQUESTS ==========
-    # Yêu cầu reset password (Admin xử lý)
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS reset_requests (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            email TEXT NOT NULL,
-            user_name TEXT,
-            status TEXT DEFAULT 'pending',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    
-    # ========== TẠO ADMIN MẶC ĐỊNH ==========
-    cursor.execute("SELECT id FROM users WHERE email = 'admin@admin.com'")
-    if not cursor.fetchone():
+    # Create admin
+    cur.execute("SELECT id FROM users WHERE email = 'admin@admin.com'")
+    if not cur.fetchone():
         from auth import hash_password
-        admin_password = hash_password('admin123')
-        cursor.execute('''
-            INSERT INTO users (email, password_hash, name, role)
-            VALUES ('admin@admin.com', ?, 'Administrator', 'admin')
-        ''', (admin_password,))
+        pw = hash_password('admin123')
+        if USE_POSTGRES:
+            cur.execute("INSERT INTO users (email, password_hash, name, role) VALUES (%s, %s, %s, %s)",
+                       ('admin@admin.com', pw, 'Administrator', 'admin'))
+        else:
+            cur.execute("INSERT INTO users (email, password_hash, name, role) VALUES (?, ?, ?, ?)",
+                       ('admin@admin.com', pw, 'Administrator', 'admin'))
         conn.commit()
-        print("✅ Đã tạo tài khoản admin mặc định!")
-        print("   Email: admin@admin.com")
-        print("   Password: admin123")
+        print("✅ Created admin: admin@admin.com / admin123")
     
-    conn.close()
-    print("✅ Database đã khởi tạo!")
+    cur.close(); conn.close()
+    print("✅ Database initialized!")
 
-
-# ==================== USER FUNCTIONS ====================
-
+# USER FUNCTIONS
 def get_user_by_email(email):
-    """Lấy user theo email"""
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM users WHERE email = ?", (email,))
-    user = cursor.fetchone()
-    conn.close()
-    return dict(user) if user else None
+    return q("SELECT * FROM users WHERE email = ?", (email,), one=True)
 
-def get_user_by_id(user_id):
-    """Lấy user theo ID"""
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute("SELECT id, email, name, role, created_at FROM users WHERE id = ?", (user_id,))
-    user = cursor.fetchone()
-    conn.close()
-    return dict(user) if user else None
+def get_user_by_id(uid):
+    return q("SELECT id, email, name, role, created_at FROM users WHERE id = ?", (uid,), one=True)
 
-def create_user(email, password_hash, name, role='user'):
-    """Tạo user mới"""
-    conn = get_db()
-    cursor = conn.cursor()
+def create_user(email, pw_hash, name, role='user'):
     try:
-        cursor.execute('''
-            INSERT INTO users (email, password_hash, name, role)
-            VALUES (?, ?, ?, ?)
-        ''', (email, password_hash, name, role))
-        conn.commit()
-        user_id = cursor.lastrowid
-        conn.close()
-        return user_id, None
-    except sqlite3.IntegrityError:
-        conn.close()
+        uid = q("INSERT INTO users (email, password_hash, name, role) VALUES (?, ?, ?, ?)",
+               (email, pw_hash, name, role))
+        return uid, None
+    except:
         return None, "Email đã tồn tại"
 
 def get_all_users():
-    """Lấy danh sách tất cả users"""
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute('SELECT id, email, name, role, created_at FROM users ORDER BY created_at DESC')
-    users = [dict(row) for row in cursor.fetchall()]
-    conn.close()
-    return users
+    return q("SELECT id, email, name, role, created_at FROM users ORDER BY created_at DESC", all=True)
 
-def update_user_role(user_id, new_role):
-    """Đổi role của user"""
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute("UPDATE users SET role = ? WHERE id = ?", (new_role, user_id))
-    conn.commit()
-    conn.close()
+def update_user_role(uid, role):
+    q("UPDATE users SET role = ? WHERE id = ?", (role, uid))
 
-def delete_user(user_id):
-    """Xóa user"""
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM users WHERE id = ?", (user_id,))
-    conn.commit()
-    conn.close()
+def delete_user(uid):
+    q("DELETE FROM users WHERE id = ?", (uid,))
 
-def admin_reset_password(user_id, new_password):
-    """Admin reset mật khẩu cho user"""
+def admin_reset_password(uid, new_pw):
     from auth import hash_password
-    conn = get_db()
-    cursor = conn.cursor()
-    password_hash = hash_password(new_password)
-    cursor.execute("UPDATE users SET password_hash = ? WHERE id = ?", (password_hash, user_id))
-    conn.commit()
-    conn.close()
+    q("UPDATE users SET password_hash = ? WHERE id = ?", (hash_password(new_pw), uid))
 
-
-# ==================== SLOT FUNCTIONS ====================
-
+# SLOT FUNCTIONS
 def get_all_slots():
-    """Lấy danh sách tất cả slots đã cấu hình"""
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute('SELECT * FROM slots WHERE is_active = 1 ORDER BY slot_number')
-    slots = [dict(row) for row in cursor.fetchall()]
-    conn.close()
-    return slots
+    return q("SELECT * FROM slots WHERE is_active = 1 ORDER BY slot_number", all=True)
 
-def get_slot_by_number(slot_number):
-    """Lấy thông tin 1 slot"""
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM slots WHERE slot_number = ?", (slot_number,))
-    slot = cursor.fetchone()
-    conn.close()
-    return dict(slot) if slot else None
+def get_slot_by_number(num):
+    return q("SELECT * FROM slots WHERE slot_number = ?", (num,), one=True)
 
-def create_slot(slot_number, name, slot_type, icon='📟', unit='', location='', 
-                threshold_min=None, threshold_max=None, stream_url=''):
-    """
-    Tạo slot mới
-    slot_type: 'value', 'status', 'control', 'camera'
-    """
-    if slot_number < 1 or slot_number > MAX_SLOTS:
-        return None, f"Slot number phải từ 1-{MAX_SLOTS}"
-    
-    conn = get_db()
-    cursor = conn.cursor()
+def create_slot(num, name, stype, icon='📟', unit='', loc='', tmin=None, tmax=None, stream=''):
+    if num < 1 or num > MAX_SLOTS:
+        return None, f"Slot phải từ 1-{MAX_SLOTS}"
     try:
-        cursor.execute('''
-            INSERT INTO slots (slot_number, name, type, icon, unit, location, 
-                             threshold_min, threshold_max, stream_url)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (slot_number, name, slot_type, icon, unit, location, 
-              threshold_min, threshold_max, stream_url))
-        conn.commit()
-        slot_id = cursor.lastrowid
-        conn.close()
-        return slot_id, None
-    except sqlite3.IntegrityError:
-        conn.close()
-        return None, f"Slot {slot_number} đã được sử dụng"
+        sid = q("INSERT INTO slots (slot_number,name,type,icon,unit,location,threshold_min,threshold_max,stream_url) VALUES (?,?,?,?,?,?,?,?,?)",
+               (num, name, stype, icon, unit, loc, tmin, tmax, stream))
+        return sid, None
+    except:
+        return None, f"Slot {num} đã tồn tại"
 
-def update_slot(slot_number, name=None, slot_type=None, icon=None, unit=None, 
-                location=None, threshold_min=None, threshold_max=None, stream_url=None):
-    """Cập nhật thông tin slot"""
-    conn = get_db()
-    cursor = conn.cursor()
-    
-    # Lấy thông tin hiện tại
-    cursor.execute("SELECT * FROM slots WHERE slot_number = ?", (slot_number,))
-    current = cursor.fetchone()
-    if not current:
-        conn.close()
+def update_slot(num, name=None, stype=None, icon=None, unit=None, loc=None, tmin=None, tmax=None, stream=None):
+    cur = get_slot_by_number(num)
+    if not cur:
         return False, "Slot không tồn tại"
-    
-    # Cập nhật các trường
-    cursor.execute('''
-        UPDATE slots SET 
-            name = COALESCE(?, name),
-            type = COALESCE(?, type),
-            icon = COALESCE(?, icon),
-            unit = COALESCE(?, unit),
-            location = COALESCE(?, location),
-            threshold_min = ?,
-            threshold_max = ?,
-            stream_url = COALESCE(?, stream_url),
-            updated_at = CURRENT_TIMESTAMP
-        WHERE slot_number = ?
-    ''', (
-        name, slot_type, icon, unit, location,
-        threshold_min, threshold_max, stream_url,
-        slot_number
-    ))
-    conn.commit()
-    conn.close()
+    q("UPDATE slots SET name=COALESCE(?,name), type=COALESCE(?,type), icon=COALESCE(?,icon), unit=COALESCE(?,unit), location=COALESCE(?,location), threshold_min=?, threshold_max=?, stream_url=COALESCE(?,stream_url) WHERE slot_number=?",
+      (name, stype, icon, unit, loc, tmin, tmax, stream, num))
     return True, None
 
-def delete_slot(slot_number):
-    """Xóa slot (hard delete)"""
-    conn = get_db()
-    cursor = conn.cursor()
-    # Xóa dữ liệu liên quan
-    cursor.execute("DELETE FROM slot_data WHERE slot_number = ?", (slot_number,))
-    cursor.execute("DELETE FROM camera_images WHERE slot_number = ?", (slot_number,))
-    # Xóa slot
-    cursor.execute("DELETE FROM slots WHERE slot_number = ?", (slot_number,))
-    conn.commit()
-    conn.close()
+def delete_slot(num):
+    q("DELETE FROM slot_data WHERE slot_number = ?", (num,))
+    q("DELETE FROM camera_images WHERE slot_number = ?", (num,))
+    q("DELETE FROM slots WHERE slot_number = ?", (num,))
 
 def get_available_slot_numbers():
-    """Lấy danh sách số slot còn trống"""
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute("SELECT slot_number FROM slots WHERE is_active = 1")
-    used = set(row['slot_number'] for row in cursor.fetchall())
-    conn.close()
-    available = [i for i in range(1, MAX_SLOTS + 1) if i not in used]
-    return available
+    slots = q("SELECT slot_number FROM slots WHERE is_active = 1", all=True)
+    used = set(s['slot_number'] for s in slots)
+    return [i for i in range(1, MAX_SLOTS + 1) if i not in used]
 
+# SLOT DATA
+def save_slot_data(num, val):
+    did = q("INSERT INTO slot_data (slot_number, value) VALUES (?, ?)", (num, str(val)))
+    check_threshold(num, val)
+    return did
 
-# ==================== SLOT DATA FUNCTIONS ====================
-
-def save_slot_data(slot_number, value):
-    """Lưu dữ liệu từ ESP32 gửi lên"""
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute('''
-        INSERT INTO slot_data (slot_number, value)
-        VALUES (?, ?)
-    ''', (slot_number, str(value)))
-    conn.commit()
-    data_id = cursor.lastrowid
-    conn.close()
-    
-    # Kiểm tra ngưỡng và tạo cảnh báo
-    check_threshold(slot_number, value)
-    
-    return data_id
-
-def get_latest_slot_data(slot_number):
-    """Lấy dữ liệu mới nhất của 1 slot"""
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute('''
-        SELECT * FROM slot_data 
-        WHERE slot_number = ? 
-        ORDER BY created_at DESC 
-        LIMIT 1
-    ''', (slot_number,))
-    data = cursor.fetchone()
-    conn.close()
-    return dict(data) if data else None
+def get_latest_slot_data(num):
+    return q("SELECT * FROM slot_data WHERE slot_number = ? ORDER BY created_at DESC LIMIT 1", (num,), one=True)
 
 def get_all_latest_data():
-    """Lấy dữ liệu mới nhất của tất cả slots"""
-    conn = get_db()
-    cursor = conn.cursor()
-    
-    # Lấy dữ liệu mới nhất cho mỗi slot
-    cursor.execute('''
-        SELECT sd.* FROM slot_data sd
-        INNER JOIN (
-            SELECT slot_number, MAX(created_at) as max_time
-            FROM slot_data
-            GROUP BY slot_number
-        ) latest ON sd.slot_number = latest.slot_number 
-                AND sd.created_at = latest.max_time
-    ''')
-    data = {row['slot_number']: dict(row) for row in cursor.fetchall()}
-    conn.close()
+    data = {}
+    for s in get_all_slots():
+        d = get_latest_slot_data(s['slot_number'])
+        if d: data[s['slot_number']] = d
     return data
 
-def get_slot_history(slot_number, limit=100):
-    """Lấy lịch sử dữ liệu của 1 slot"""
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute('''
-        SELECT * FROM slot_data 
-        WHERE slot_number = ? 
-        ORDER BY created_at DESC 
-        LIMIT ?
-    ''', (slot_number, limit))
-    history = [dict(row) for row in cursor.fetchall()]
-    conn.close()
-    return history
+def get_slot_history(num, limit=100):
+    return q("SELECT * FROM slot_data WHERE slot_number = ? ORDER BY created_at DESC LIMIT ?", (num, limit), all=True)
 
+# CAMERA
+def save_camera_image(num, img):
+    q("DELETE FROM camera_images WHERE slot_number = ?", (num,))
+    q("INSERT INTO camera_images (slot_number, image_data) VALUES (?, ?)", (num, img))
 
-# ==================== CAMERA FUNCTIONS ====================
+def get_camera_image(num):
+    return q("SELECT * FROM camera_images WHERE slot_number = ?", (num,), one=True)
 
-def save_camera_image(slot_number, image_data):
-    """
-    Lưu ảnh camera (ghi đè ảnh cũ)
-    image_data: Base64 string
-    """
-    conn = get_db()
-    cursor = conn.cursor()
-    
-    # Xóa ảnh cũ
-    cursor.execute("DELETE FROM camera_images WHERE slot_number = ?", (slot_number,))
-    
-    # Lưu ảnh mới
-    cursor.execute('''
-        INSERT INTO camera_images (slot_number, image_data)
-        VALUES (?, ?)
-    ''', (slot_number, image_data))
-    conn.commit()
-    conn.close()
-
-def get_camera_image(slot_number):
-    """Lấy ảnh mới nhất của camera"""
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute('''
-        SELECT * FROM camera_images 
-        WHERE slot_number = ?
-    ''', (slot_number,))
-    image = cursor.fetchone()
-    conn.close()
-    return dict(image) if image else None
-
-
-# ==================== ALERT FUNCTIONS ====================
-
-def check_threshold(slot_number, value):
-    """Kiểm tra ngưỡng và tạo cảnh báo nếu vượt"""
-    slot = get_slot_by_number(slot_number)
-    if not slot or slot['type'] != 'value':
-        return
-    
+# ALERTS
+def check_threshold(num, val):
+    slot = get_slot_by_number(num)
+    if not slot or slot['type'] != 'value': return
     try:
-        numeric_value = float(value)
-    except:
-        return
-    
-    if slot['threshold_max'] and numeric_value > slot['threshold_max']:
-        create_alert(
-            slot_number, 
-            'threshold_high',
-            f"⚠️ {slot['name']} vượt ngưỡng cao: {value}{slot['unit']} (>{slot['threshold_max']}{slot['unit']})"
-        )
-    
-    if slot['threshold_min'] and numeric_value < slot['threshold_min']:
-        create_alert(
-            slot_number,
-            'threshold_low', 
-            f"⚠️ {slot['name']} dưới ngưỡng thấp: {value}{slot['unit']} (<{slot['threshold_min']}{slot['unit']})"
-        )
+        v = float(val)
+    except: return
+    if slot['threshold_max'] and v > slot['threshold_max']:
+        create_alert(num, 'high', f"⚠️ {slot['name']} vượt ngưỡng: {val}{slot['unit']}")
+    if slot['threshold_min'] and v < slot['threshold_min']:
+        create_alert(num, 'low', f"⚠️ {slot['name']} dưới ngưỡng: {val}{slot['unit']}")
 
-def create_alert(slot_number, alert_type, message):
-    """Tạo cảnh báo mới"""
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute('''
-        INSERT INTO alerts (slot_number, alert_type, message)
-        VALUES (?, ?, ?)
-    ''', (slot_number, alert_type, message))
-    conn.commit()
-    conn.close()
+def create_alert(num, atype, msg):
+    q("INSERT INTO alerts (slot_number, alert_type, message) VALUES (?, ?, ?)", (num, atype, msg))
 
 def get_alerts(limit=50):
-    """Lấy danh sách cảnh báo"""
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute('''
-        SELECT * FROM alerts 
-        ORDER BY created_at DESC 
-        LIMIT ?
-    ''', (limit,))
-    alerts = [dict(row) for row in cursor.fetchall()]
-    conn.close()
-    return alerts
+    return q("SELECT * FROM alerts ORDER BY created_at DESC LIMIT ?", (limit,), all=True)
 
-def mark_alert_read(alert_id):
-    """Đánh dấu cảnh báo đã đọc"""
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute("UPDATE alerts SET is_read = 1 WHERE id = ?", (alert_id,))
-    conn.commit()
-    conn.close()
+def mark_alert_read(aid):
+    q("UPDATE alerts SET is_read = 1 WHERE id = ?", (aid,))
 
 def get_unread_alert_count():
-    """Đếm số cảnh báo chưa đọc"""
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute("SELECT COUNT(*) FROM alerts WHERE is_read = 0")
-    count = cursor.fetchone()[0]
-    conn.close()
-    return count
+    r = q("SELECT COUNT(*) as count FROM alerts WHERE is_read = 0", one=True)
+    return r['count'] if r else 0
 
-
-# ==================== RESET PASSWORD FUNCTIONS ====================
-
+# RESET PASSWORD
 def create_reset_code(email):
-    """Tạo mã reset password"""
     import random
-    
-    # Kiểm tra email tồn tại
     user = get_user_by_email(email)
-    if not user:
-        return None, "Email không tồn tại"
-    
+    if not user: return None, "Email không tồn tại"
     code = str(random.randint(100000, 999999))
-    
-    conn = get_db()
-    cursor = conn.cursor()
-    
-    # Xóa mã cũ
-    cursor.execute("DELETE FROM reset_codes WHERE email = ?", (email,))
-    
-    # Tạo mã mới (hết hạn sau 15 phút)
-    cursor.execute('''
-        INSERT INTO reset_codes (email, code, expires_at)
-        VALUES (?, ?, datetime('now', '+15 minutes'))
-    ''', (email, code))
-    conn.commit()
-    conn.close()
-    
+    q("DELETE FROM reset_codes WHERE email = ?", (email,))
+    if USE_POSTGRES:
+        q("INSERT INTO reset_codes (email, code, expires_at) VALUES (?, ?, CURRENT_TIMESTAMP + INTERVAL '15 minutes')", (email, code))
+    else:
+        q("INSERT INTO reset_codes (email, code, expires_at) VALUES (?, ?, datetime('now', '+15 minutes'))", (email, code))
     return code, None
 
 def verify_reset_code(email, code):
-    """Kiểm tra mã reset có đúng không"""
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute('''
-        SELECT * FROM reset_codes 
-        WHERE email = ? AND code = ? AND expires_at > datetime('now')
-    ''', (email, code))
-    result = cursor.fetchone()
-    conn.close()
-    return result is not None
+    if USE_POSTGRES:
+        r = q("SELECT * FROM reset_codes WHERE email = ? AND code = ? AND expires_at > CURRENT_TIMESTAMP", (email, code), one=True)
+    else:
+        r = q("SELECT * FROM reset_codes WHERE email = ? AND code = ? AND expires_at > datetime('now')", (email, code), one=True)
+    return r is not None
 
-def reset_password(email, new_password):
-    """Đổi mật khẩu"""
+def reset_password(email, new_pw):
     from auth import hash_password
-    
-    conn = get_db()
-    cursor = conn.cursor()
-    password_hash = hash_password(new_password)
-    cursor.execute("UPDATE users SET password_hash = ? WHERE email = ?", (password_hash, email))
-    cursor.execute("DELETE FROM reset_codes WHERE email = ?", (email,))
-    conn.commit()
-    conn.close()
+    q("UPDATE users SET password_hash = ? WHERE email = ?", (hash_password(new_pw), email))
+    q("DELETE FROM reset_codes WHERE email = ?", (email,))
 
-
-# ==================== DASHBOARD STATS ====================
-
+# DASHBOARD
 def get_dashboard_stats():
-    """Lấy thống kê cho dashboard"""
-    conn = get_db()
-    cursor = conn.cursor()
-    
-    cursor.execute("SELECT COUNT(*) FROM slots WHERE is_active = 1")
-    total_slots = cursor.fetchone()[0]
-    
-    cursor.execute("SELECT COUNT(*) FROM slots WHERE is_active = 1 AND type = 'camera'")
-    total_cameras = cursor.fetchone()[0]
-    
-    cursor.execute("SELECT COUNT(*) FROM slots WHERE is_active = 1 AND type = 'control'")
-    total_controls = cursor.fetchone()[0]
-    
-    cursor.execute("SELECT COUNT(*) FROM alerts WHERE is_read = 0")
-    unread_alerts = cursor.fetchone()[0]
-    
-    conn.close()
-    
+    t = q("SELECT COUNT(*) as count FROM slots WHERE is_active = 1", one=True)
+    c = q("SELECT COUNT(*) as count FROM slots WHERE is_active = 1 AND type = 'camera'", one=True)
+    co = q("SELECT COUNT(*) as count FROM slots WHERE is_active = 1 AND type = 'control'", one=True)
+    a = q("SELECT COUNT(*) as count FROM alerts WHERE is_read = 0", one=True)
     return {
-        'total_slots': total_slots,
-        'total_cameras': total_cameras,
-        'total_controls': total_controls,
-        'unread_alerts': unread_alerts
+        'total_slots': t['count'] if t else 0,
+        'total_cameras': c['count'] if c else 0,
+        'total_controls': co['count'] if co else 0,
+        'unread_alerts': a['count'] if a else 0
     }
 
-# ==================== PASSWORD RESET REQUESTS ====================
-
-def create_password_reset_request(email):
-    """Tạo yêu cầu reset password để Admin xử lý"""
-    user = get_user_by_email(email)
-    if not user:
-        return None, "Email không tồn tại"
-    
-    conn = get_db()
-    cursor = conn.cursor()
-    
-    # Xóa yêu cầu cũ của email này
-    cursor.execute("DELETE FROM reset_requests WHERE email = ?", (email,))
-    
-    # Tạo yêu cầu mới
-    cursor.execute('''
-        INSERT INTO reset_requests (email, user_name, status, created_at)
-        VALUES (?, ?, 'pending', CURRENT_TIMESTAMP)
-    ''', (email, user['name']))
-    conn.commit()
-    request_id = cursor.lastrowid
-    conn.close()
-    
-    return request_id, None
-
-def get_reset_requests():
-    """Lấy danh sách yêu cầu reset password (cho Admin)"""
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute('''
-        SELECT * FROM reset_requests 
-        ORDER BY created_at DESC
-    ''')
-    requests = [dict(row) for row in cursor.fetchall()]
-    conn.close()
-    return requests
-
-def get_pending_reset_count():
-    """Đếm số yêu cầu chưa xử lý"""
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute("SELECT COUNT(*) FROM reset_requests WHERE status = 'pending'")
-    count = cursor.fetchone()[0]
-    conn.close()
-    return count
-
-def complete_reset_request(request_id):
-    """Đánh dấu yêu cầu đã xử lý"""
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute('''
-        UPDATE reset_requests 
-        SET status = 'completed' 
-        WHERE id = ?
-    ''', (request_id,))
-    conn.commit()
-    conn.close()
-
-def delete_reset_request(request_id):
-    """Xóa yêu cầu"""
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM reset_requests WHERE id = ?", (request_id,))
-    conn.commit()
-    conn.close()
-
-# ==================== CHẠY THỬ ====================
 if __name__ == '__main__':
     init_db()
-    print("\n📊 Thống kê:")
-    print(get_dashboard_stats())
