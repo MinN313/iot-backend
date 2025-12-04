@@ -1,35 +1,5 @@
-# ============================================================
-# .gitignore - KHÔNG PUSH CÁC FILE NÀY LÊN GITHUB
-# ============================================================
-
-# Python
 __pycache__/
 *.py[cod]
-*$py.class
-*.so
-.Python
-env/
-venv/
-.venv/
-
-# Database
 *.db
-*.sqlite
-*.sqlite3
-
-# IDE
-.idea/
-.vscode/
-*.swp
-*.swo
-
-# Environment
 .env
-.env.local
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Logs
-*.log
+venv/

@@ -1,19 +1,8 @@
-# Flask
 flask==2.3.3
 flask-cors==4.0.0
-
-# Auth
 pyjwt==2.8.0
 bcrypt==4.0.1
-
-# MQTT
 paho-mqtt==1.6.1
-
-# Server
 gunicorn==21.2.0
-
-# PostgreSQL
 psycopg2-binary==2.9.9
-
-# Email
 resend==0.6.0
